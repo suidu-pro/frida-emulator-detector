@@ -91,23 +91,58 @@ function hookFileDetection() {
 
     const File = Java.use('java.io.File');
 
-    File.exists.implementation = function () {
-        const path = this.getAbsolutePath();
-        const result = this.exists();
-        if (EMULATOR_PATHS.some(p => path.includes(p)) ||
-            path.includes('qemu') || path.includes('emu') || path.includes('geny')) {
-            logHit('File.exists', `"${path}"`, result, SHOW_STACK);
-        }
-        return result;
-    };
+    // hook exists()：稳定，所有 Android 版本均可用
+    try {
+        File.exists.implementation = function () {
+            const path = this.getAbsolutePath();
+            const result = this.exists();
+            if (EMULATOR_PATHS.some(p => path.includes(p)) ||
+                path.includes('qemu') || path.includes('emu') || path.includes('geny')) {
+                logHit('File.exists', `"${path}"`, result, SHOW_STACK);
+            }
+            return result;
+        };
+    } catch (e) {
+        console.warn('[File.exists] hook 失败:', e.message);
+    }
 
-    File.$init.overload('java.lang.String').implementation = function (path) {
-        this.$init(path);
-        if (EMULATOR_PATHS.some(p => path && path.includes(p)) ||
-            (path && (path.includes('qemu') || path.includes('geny') || path.includes('bluestacks')))) {
-            logHit('File.new', `"${path}"`, undefined, SHOW_STACK);
+    // hook isFile() / isDirectory()：作为 exists() 的补充检测点
+    ['isFile', 'isDirectory'].forEach(method => {
+        try {
+            File[method].implementation = function () {
+                const path = this.getAbsolutePath();
+                const result = this[method]();
+                if (EMULATOR_PATHS.some(p => path.includes(p)) ||
+                    path.includes('qemu') || path.includes('emu') || path.includes('geny')) {
+                    logHit(`File.${method}`, `"${path}"`, result, SHOW_STACK);
+                }
+                return result;
+            };
+        } catch (e) {}
+    });
+
+    // 注意：java.io.File 构造器（$init）在部分 Android 版本中为 native 实现，
+    // 直接 hook 会触发 "invalid address" 错误，此处改用 Native 层拦截 open/access 系统调用。
+    try {
+        const libc = Process.getModuleByName('libc.so');
+        for (const sym of ['access', 'open', 'open64', 'fopen']) {
+            const fn = libc.findExportByName(sym);
+            if (!fn) continue;
+            Interceptor.attach(fn, {
+                onEnter(args) {
+                    try {
+                        const path = args[0].readCString();
+                        if (path && (EMULATOR_PATHS.some(p => path.includes(p)) ||
+                            path.includes('qemu') || path.includes('geny') || path.includes('bluestacks'))) {
+                            console.log(`\n${'\x1b[36m'}[Native.${sym}]\x1b[0m "${path}"`);
+                        }
+                    } catch (e) {}
+                }
+            });
         }
-    };
+    } catch (e) {
+        console.warn('[Native file hook] 失败:', e.message);
+    }
 }
 
 // ─── 4. 传感器检测（模拟器通常无传感器）─────────────────────────────────
