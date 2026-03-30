@@ -121,28 +121,8 @@ function hookFileDetection() {
         } catch (e) {}
     });
 
-    // 注意：java.io.File 构造器（$init）在部分 Android 版本中为 native 实现，
-    // 直接 hook 会触发 "invalid address" 错误，此处改用 Native 层拦截 open/access 系统调用。
-    try {
-        const libc = Process.getModuleByName('libc.so');
-        for (const sym of ['access', 'open', 'open64', 'fopen']) {
-            const fn = libc.findExportByName(sym);
-            if (!fn) continue;
-            Interceptor.attach(fn, {
-                onEnter(args) {
-                    try {
-                        const path = args[0].readCString();
-                        if (path && (EMULATOR_PATHS.some(p => path.includes(p)) ||
-                            path.includes('qemu') || path.includes('geny') || path.includes('bluestacks'))) {
-                            console.log(`\n${'\x1b[36m'}[Native.${sym}]\x1b[0m "${path}"`);
-                        }
-                    } catch (e) {}
-                }
-            });
-        }
-    } catch (e) {
-        console.warn('[Native file hook] 失败:', e.message);
-    }
+    // 注意：open/access 等系统调用属于超高频调用，JS 层拦截会导致 app 卡死崩溃，不在此 hook。
+    // 文件检测依赖 Java 层 File.exists / isFile / isDirectory 已足够覆盖常规检测手段。
 }
 
 // ─── 4. 传感器检测（模拟器通常无传感器）─────────────────────────────────
@@ -235,19 +215,27 @@ function hookProcFiles() {
     const PROC_TARGETS = ['/proc/cpuinfo', '/proc/self/maps', '/proc/self/status',
                           '/sys/class/power_supply', '/proc/net/tcp'];
 
-    FileInputStream.$init.overload('java.lang.String').implementation = function (path) {
-        if (PROC_TARGETS.some(p => path && path.startsWith(p))) {
-            logHit('FileInputStream', `open("${path}")`, undefined, SHOW_STACK);
-        }
-        this.$init(path);
-    };
+    try {
+        FileInputStream.$init.overload('java.lang.String').implementation = function (path) {
+            if (PROC_TARGETS.some(p => path && path.startsWith(p))) {
+                logHit('FileInputStream', `open("${path}")`, undefined, SHOW_STACK);
+            }
+            this.$init(path);
+        };
+    } catch (e) {
+        console.warn('[FileInputStream.$init] hook 失败:', e.message);
+    }
 
-    FileReader.$init.overload('java.lang.String').implementation = function (path) {
-        if (PROC_TARGETS.some(p => path && path.startsWith(p))) {
-            logHit('FileReader', `open("${path}")`, undefined, SHOW_STACK);
-        }
-        this.$init(path);
-    };
+    try {
+        FileReader.$init.overload('java.lang.String').implementation = function (path) {
+            if (PROC_TARGETS.some(p => path && path.startsWith(p))) {
+                logHit('FileReader', `open("${path}")`, undefined, SHOW_STACK);
+            }
+            this.$init(path);
+        };
+    } catch (e) {
+        console.warn('[FileReader.$init] hook 失败:', e.message);
+    }
 }
 
 // ─── 9. 运行时命令执行（执行 shell 命令获取信息）─────────────────────────
